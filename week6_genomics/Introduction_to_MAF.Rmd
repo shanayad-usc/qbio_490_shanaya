@@ -1,0 +1,129 @@
+---
+title: "Introduction to MAF"
+author: Joshua Lin, Christopher Kim, Erika Li, Jeanne Revilla, Mahija Mogalipuvvu, adapted from Nicole Black, Wade Boohar
+date: 07/17/22
+updated: 10/12/2026
+---
+
+***Deliverables***
+- upload this R Notebook to your GitHub and submit the link to your Repo on Brightspace
+- include ALL graphs or figures created in this assignment in a folder with your R notebook with descriptive file names.
+
+We encourage you to work with a partner. Therefore, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *If you do work with a partner, at the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In this assignment, you will need to use your skills learned in class to demonstrate your understanding of categorical variables and R data structures.
+
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath("/home1/shanayad/490_cluster/analysis_data"))
+```
+
+*Pre-Assignment*
+Load all necessary packages, read in the clinical data.csv file you have in your analysis_data folder, and instantiate the MAF_object.
+```{r}
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+
+clinical <- read.csv("/home1/shanayad/490_cluster/analysis_data/brca_clinical_data.csv")
+colnames(clinical)[colnames(clinical) == "bcr_patient_barcode"] <- "Tumor_Sample_Barcode"
+
+maf_query <- GDCquery(project = "TCGA-BRCA", data.category = "Simple Nucleotide Variation", access = "open", data.type = "Masked Somatic Mutation", workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking")
+maf <- GDCprepare(maf_query)
+
+maf_object <- read.maf(maf = maf, clinicalData = clinical, isTCGA = TRUE)
+```
+
+It's useful to save your MAF_object, so that you don't have to go through the trouble of querying and preparing it everytime. The saveRDS function allows us to save an R object, allowing us to access it directly from our files. 
+```{r}
+saveRDS(maf_object, file = "/home1/shanayad/490_cluster/analysis_data/results.rds")
+```
+
+When you reopen a new R session and want to access your MAF_object, you can use the readRDS function to load the object back into a new variable.
+```{r}
+maf_object <- readRDS("/home1/shanayad/490_cluster/analysis_data/results.rds")
+```
+
+*1*
+Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
+```{r}
+nodes <- as.numeric(maf_object@clinical.data$lymph_nodes_examined_he_count)
+summary(nodes)
+hist(nodes)
+node_status <- ifelse(is.na(nodes), "Unknown", ifelse(nodes == 0, "Negative", "Positive"))
+
+maf_object@clinical.data$node_status <- as.factor(node_status)
+table(maf_object@clinical.data$node_status)
+```
+
+
+*2*
+Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
+Research it. What is the gene used for? Can you think of any reason for the discrepancy?
+
+TP53 is a tumor suppressor that can deal with damaged DNA, either through repairing it or by initiating cell death. Interestingly, we see more of this mutation in negative patients, this may mean that other cancer types, that often do not spread to lymph nodes, are more likely to have this mutation.
+```{r}
+negative_mask <- ifelse(maf_object@clinical.data$node_status == "Negative", T, F)
+positive_mask <- ifelse(maf_object@clinical.data$node_status == "Positive", T, F)
+
+negative_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[negative_mask]
+positive_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[positive_mask]
+
+negative_maf <- subsetMaf(maf = maf_object, tsb = negative_barcodes)
+positive_maf <- subsetMaf(maf = maf_object, tsb = positive_barcodes)
+
+oncoplot(maf = maf_object, top = 10)
+top_10_genes <- maf_object@gene.summary$Hugo_Symbol[1:10] #found gene.summary online, otherwise would manually write out each gene name
+coOncoplot(m1 = negative_maf, m1Name = "Node Negative", m2 = positive_maf, m2Name = "Node Positive", genes = top_10_genes)
+```
+
+
+*3*
+Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
+Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
+
+The odds ratio is 1.30 so it seems that negative patients had higher odds of a TP53 mutation; however, p = 0.077 therefore these results are not statistically significant.
+```{r}
+
+known_mask <- ifelse(maf_object@clinical.data$node_status != "Unknown", T, F)
+known_clinical <- maf_object@clinical.data[known_mask, ]
+
+TP53_maf <- subsetMaf(maf = maf_object, genes = "TP53")
+mutation_status <- ifelse(known_clinical$Tumor_Sample_Barcode %in% TP53_maf@clinical.data$Tumor_Sample_Barcode, "mutation", "no_mutation")
+
+node_positive_mask <- ifelse(known_clinical$node_status == "Positive", T, F)
+contingency_table <- table(mutation_status, node_positive_mask)
+contingency_table
+mosaicplot(contingency_table)
+fisher.test(contingency_table)
+
+```
+
+
+*4*
+Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
+Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
+
+The two groups are relatively symmetrical, with them having the same hotspot and majority of mutations in/around the same area. This makes sense given our p-value was not significant, as there may not be a real/true difference between populations in this area for TP53.
+```{r}
+lollipopPlot2(m1 = negative_maf, m2 = positive_maf, m1_name = "Node Negative Patients", m2_name = "Node Positive Patients", gene = "TP53")
+
+```
+
+
+*5*
+Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
+Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
+
+TP53 mutant patients seem to have slightly worse survival early on given the HR value of 1.42, but again, this difference isn’t statistically significant as p = 0.086. This makes sense as looking at the plot, both groups though not perfectly aligned remain pretty similar.
+```{r}
+death <- as.numeric(maf_object@clinical.data$death_days_to)
+contact <- as.numeric(maf_object@clinical.data$last_contact_days_to)
+
+maf_object@clinical.data$survival_time <- ifelse(maf_object@clinical.data$vital_status == "Dead", death, contact)
+
+maf_object@clinical.data$Overall_Survival_Status <- ifelse(maf_object@clinical.data$vital_status == "Dead", T, F)
+
+mafSurvival(maf = maf_object, genes = "TP53", time = "survival_time", Status = "Overall_Survival_Status")
+```
